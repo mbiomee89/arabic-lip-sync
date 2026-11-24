@@ -1,110 +1,150 @@
 ---
 name: arabic-lip-sync
-description: Time a cartoon or avatar's mouth to Arabic speech (fusha or dialect). Takes a voice recording plus the vowel-marked text, finds where each letter and vowel is said, and gives each moment a mouth shape (closed for ب م, round for damma and و, wide for long ا, and so on) from rules measured on a real speaker's mouth. Outputs a mouth-timing JSON and an optional preview video from the character's mouth pictures. Use whenever someone wants an Arabic-speaking character to talk, asks for Arabic lip sync or mouth animation (مزامنة الشفاه، حركة الفم), or has Arabic voice audio that needs mouth shapes, even if they don't say "lip sync".
+description: Make an Arabic-speaking or singing cartoon/avatar video, end to end - the character's 9 mouth pictures (with an image prompt for a 3x3 mouth sheet), the voice (the user's recording, or free/paid TTS options), letter-exact mouth timing for Arabic speech or songs (fusha or dialect), a review loop, and the final video. Timing comes from the sound; mouth shapes come from the vowel-marked text (closed for ب م, round for damma and و, open for fatha/ا, sh for ش…), measured on a real speaker, with a singing mode for songs. Use whenever someone wants an Arabic-speaking or singing character, asks for Arabic lip sync or mouth animation (مزامنة الشفاه، حركة الفم), has Arabic voice or a song that needs mouth shapes, or has a character picture they want to make talk, even if they don't say "lip sync".
 ---
 
-# Arabic lip sync
+# Arabic lip sync: character video, step by step
 
-Turns Arabic speech into timed mouth shapes. The timing comes from the sound itself; the shapes come
-from the vowel-marked text, using rules measured frame by frame from a real speaker's video
-(details and numbers in `references/mouth_shapes.md`).
+The user decides at every step. **Show what you will do and wait for their go before running,
+installing, downloading, generating (credits) or rendering.** Reading and measuring to answer a
+question is fine. An earlier OK does not cover the next step.
 
-Everything runs locally. Ask the user before installing or downloading anything.
+Scripts are in `scripts/`, run with the user's Python (the MMS parts use the torch venv by themselves).
 
-## 1. Check the setup
+## 0. The character's mouths
+Needed: a folder with 9 same-size pictures named `rest closed f small mid wide round aw sh` (.png/.jpg).
+- **No folder:** ask for one image of the character (front-facing, mouth visible). Give the user the
+  prompt in `references/mouth_sheet_prompt.md` for their image tool. When the 3×3 sheet comes back:
+  `python scripts/mouth_pictures.py cut sheet.png mouths/` (other panel orders: `--order ...`).
+  It lines up the panels, pastes ONLY the mouths onto `rest`, and writes `mouths/contact_sheet.png`.
+  Show the contact sheet; read any WARNING about a drifting panel; wait for the user's OK.
+- **A folder already exists:** `python scripts/mouth_pictures.py check mouths/`. If it says SHIMMER,
+  offer `--fix` (writes `mouths_fixed/`, originals untouched), show its contact sheet, use it only
+  after the user's OK. Tell the user which mouths are missing (stand-ins will be used).
+- Under about 400 px a mouth looks soft in a final video; say so.
 
+## 1. Text and voice
+**a) Text.** Ask for the line or lyrics and the dialect (fusha, Egyptian, Saudi, Gulf…).
+- Mouth shapes depend on the vowels, so the script needs تشكيل. One phrase per line; a line end or
+  punctuation is a pause. Text without marks: add them (`references/adding_vowel_marks.md`, which also
+  covers dialect and songs), **show the marked text and wait for the user's OK**. Mark words as they are
+  SAID or SUNG, not as written (Egyptian ق as ء, a contraction as one word).
+- No text at all: run step 4 once without `--script`; Whisper's transcript is saved next to the
+  output. Fix it with the user, add marks, show, then continue. For songs, ask the user for the real
+  lyrics: Whisper on singing is unreliable even on separated vocals.
+- If a TTS voice will read the text, keep two spellings: a **voice spelling** for the TTS and the
+  **timing spelling** (fully marked, as said) for the script (`references/voice_options.md`).
+
+**b) Voice.** Ask: "Do you have a recording?"
+- **Yes:** take the file (any audio/video format). A song: ask which part (start–end).
+- **No:** ask "free, or best quality?", show the options in `references/voice_options.md`, recommend
+  (free → Edge voices or recording themselves; best → ElevenLabs), and wait for their choice.
+  Paid: state the expected cost first. Never pick or pay for a voice on your own.
+
+## 2. Tools for this job
 ```bash
-python scripts/setup_check.py
+python scripts/setup_check.py --job speech|song --voice none|edge|xtts|mmstts|elevenlabs
 ```
+Checks only what THIS job needs: always ffmpeg, numpy, librosa, Pillow and the MMS aligner; Whisper
+for checking words; Demucs for songs; the voice tool the user picked. If something is missing, tell
+the user what and how big, ask before installing, and offer the fallback if they say no (Whisper
+`--model medium`: rougher checks; no MMS: `--aligner whisper`, about 0.1 s rougher and worse on songs).
+Setup details: `references/mms_timing.md`.
 
-Needs ffmpeg, Python with `numpy` and `faster-whisper` (tested versions in `requirements.txt`), and the
-Whisper `large-v3` model (about 3 GB). If something is missing, tell the user what and how big, and wait
-for their OK before installing. `--model medium` works with a smaller model, with rougher word times.
-`python tests/test_rules.py` checks the script rules and cue cleanup without any audio.
+## 3. Prepare the audio
+- **Song:** cut the part (`ffmpeg -ss START -to END -i song -vn clip.wav`), then separate the vocals:
+  `<mms venv python> -m demucs -n htdemucs --two-stems=vocals -o sep clip.wav`
+  → `sep/htdemucs/clip/vocals.wav`. **Time on the vocals; play the full clip in the video.**
+- **TTS:** generate one take after the user OKs the cost (`references/voice_options.md` has the
+  ElevenLabs connector steps). Check the words: `python scripts/lipsync.py voice.mp3 --out check.json`
+  (no `--script`) writes the transcript. A word said wrong: test that ONE line with a new voice
+  spelling (cheap) before generating the whole text again.
+- **Recording:** use it as is. The report warns when it is noisy or echoey.
 
-## 2. Get the vowel-marked script
-
-The mouth shapes depend on the vowels, so the text needs تشكيل (fatha, kasra, damma, sukun, shadda,
-long vowels). One sentence or phrase per line; a line end or punctuation marks a pause.
-
-- **The user gave the text with vowel marks:** use it as is.
-- **The user gave text without marks:** add them yourself, following `references/adding_vowel_marks.md`,
-  and show the user the marked text to check before running. Dialect words are marked as they are said,
-  not as in fusha.
-- **No text at all:** run step 3 without `--script`. Whisper's transcript is saved next to the output;
-  fix wrong words, add the marks, and show the user before running again.
-
-## 3. Run
-
+## 4. Timing
 ```bash
-python scripts/lipsync.py <audio or video> --out mouths.json --script script.txt --words words.json
+# speech
+python scripts/lipsync.py voice.mp3 --out mouths.json --script script.txt --aligner mms [--dialect egy] --mouths mouths/ --fps 30
+# song (on the separated vocals)
+python scripts/lipsync.py vocals.wav --out mouths.json --script lyrics.txt --aligner mms [--dialect egy] --mouths mouths/ --fps 30 --sing --style calm|open
 ```
+- `--aligner mms` places every letter and vowel (how and why: `references/mms_timing.md`).
+- `--mouths` + `--sh auto` (default): ش shows the `sh` mouth when the character has `sh.png`.
+- `--fps` = the final video's frame rate; every sound gets at least one frame.
+- **Songs: ask the style before running, every song** (tastes differ): `calm` = no wide mouth, a
+  short fatha stays medium (the tested user's choice); `open` = wide only on notes held 0.7 s or more.
+  `--sing` also starts vowels when the singer opens, opens kasra/ي the singer sings open (measured
+  from the voice), closes on sung م/ن hums, and lets long notes move with the voice. Details and
+  settings (`--bright`, `--hum-max`) at the top of `scripts/sing.py`.
 
-`--words` keeps Whisper's word times in a file, so later runs (after fixing the script) skip Whisper.
-Any audio or video format works; it is converted to 16 kHz mono first.
+## 5. Read the report before rendering
+- **CHECK THESE WORDS FIRST** (aligner score under 0.5): usually a wrong word or vowel mark. Show them
+  to the user before anything else.
+- **REVIEW NEEDED** (exit code 3): over 15% of words guessed/unsure. Stop, show the words, fix the text.
+- **sounds shown / missing:** each mouth a word calls for, looked for in order. A miss is worth a look.
+  With `--sing` the count is lower on purpose (it is counted against the speech shapes, and `--sing`
+  opens some of them): the tested song showed 69 of 75. Judge songs in the slow preview.
+- **long closed mouth** (songs): a closed mouth over 0.4 s, often a hummed م; check it by eye.
+- **WARNING noisy or echoey recording:** timing may be rougher.
+- **seconds per mouth:** lots of `rest` inside speech means the timing slipped.
 
-Output `mouths.json`:
-```json
-{"mouthCues": [{"start": 0.0, "end": 1.18, "mouth": "rest"}, {"start": 1.18, "end": 1.31, "mouth": "closed"}],
- "words": [...], "report": {...}}
-```
-To use the cues in a video, the mouth at frame `n` is the cue where `start <= n / fps < end`.
-
-## 4. Read the check
-
-The script prints, and `report` holds:
-- **words heard / guessed / unsure:** words Whisper didn't hear get their time shared out from their
-  neighbours (`"timing": "guessed"` on the word); words heard with low confidence are listed as unsure.
-  Numbers said in words (٩٨٤٣ read out) are often guessed: their time is only as good as the words around them.
-- **REVIEW NEEDED (exit code 3):** more than 15% of word times are guessed or unsure. The cues are still
-  written, but **stop and show the user the listed words** before using them: usually the script doesn't
-  match what was said. Fix the script (or the audio) and run again.
-- **closures shown for ب/م:** each ب/م is counted on its own (a doubled مّ is one long closure).
-  Words listed as "fewer closures than expected" are worth checking in the preview; lips that don't
-  close on ب/م are the most visible mistake in lip sync.
-- **words without vowel marks:** add marks to these and re-run.
-- **seconds per mouth:** a quick sanity check (lots of `rest` in the middle of speech means the timing slipped).
-
-## 5. Preview (optional)
-
+## 6. Preview
 ```bash
-python scripts/render_preview.py mouths.json <audio> <mouth pictures folder> preview.mp4 --slow
+python scripts/render_preview.py mouths.json <full audio> mouths/ preview.mp4 --slow --strict
 ```
+Send both videos (normal and `_slow`), and ask the user to watch the slow one. `--strict` refuses stand-in
+mouths; without it, missing mouths borrow the nearest one (listed before rendering).
 
-The folder holds one picture per mouth, same size, named by mouth: `rest closed f small mid wide round aw sh`
-(.png or .jpg), all the same size. A missing mouth uses the nearest one the character has, and the
-stand-ins are printed **before** rendering; add `--strict` to refuse stand-ins (use it for anything final).
-A character with just rest, closed, small, mid, wide and round works; tell the user which of `f`, `aw`
-and `sh` their character lacks, since those make Arabic look more right. `--slow` adds a half-speed copy
-for checking closures by eye.
+## 7. The review loop
+- The user names the word or moment. **Measure the voice there and explain the cause before changing
+  anything**: wrong word, wrong mark, mouth too open/closed, timing. Use RMS loudness (librosa) when
+  measuring; a quick spectrum sum misled once.
+- Propose the fix, wait for go, then make the next version (`v2`, `v3`…). Never overwrite a version.
+- Show what changed: `python scripts/compare.py mouths_v2.json mouths_v3.json`.
+- Note the user's taste for the next run (for example: no wide mouth, short fatha stays medium).
 
-## Mouths
+## 8. Final video
+Ask the format: size (1080x1920 Reels/Shorts, 1080x1080 square, 1920x1080 wide), background
+colour, frame rate (the same as step 4's `--fps`). Then:
+```bash
+python scripts/render_preview.py mouths.json <full audio> mouths/ final.mp4 --strict --size 1080x1920 --bg white --fps 30
+```
+Hand over the video and `mouths.json` (for After Effects, Remotion, a game engine…).
+Blinks, head movement and in-between mouths are not part of this skill yet.
+
+## Mouths and rules
 
 | mouth | when | looks like |
 |---|---|---|
 | rest | silence | lips together, relaxed |
-| closed | ب م | lips pressed (about 0.1 s in normal speech) |
+| closed | ب م, the Jazan article امْ | lips pressed (about 0.1 s in normal speech) |
 | f | ف | lower lip pulled in under the top teeth |
 | small | kasra, long ي, most consonants | nearly shut, lips spread |
 | mid | fatha | lips apart, top teeth showing |
 | wide | long ا / ى, fatha on ع ء | widest opening |
 | round | damma, long و, consonant و | lips pushed out, mouth narrower |
 | aw | off by default: fatha / long ا after ص ض ط ظ ق خ ر | open and rounded |
-| sh | off by default: ش | lips pushed out and open |
+| sh | ش, when the character has an sh mouth (`--sh auto`) | lips pushed out and open |
 
-`aw`, `sh` and rounding the consonant before a damma are all real (clearly seen in slow speech), but
-made normal speech match the real mouth less well, so they are off. Switch them on in `scripts/rules.py`
-(`HEAVY_ROUND`, `USE_SH`, `ROUND_BEFORE_DAMMA`) for slow, careful speech or a character that has those mouths.
+`aw` and rounding the consonant before a damma are real but made normal speech match a real mouth
+less well, so they are off (`HEAVY_ROUND`, `ROUND_BEFORE_DAMMA` in `scripts/rules.py`).
+
+Every letter has the same priority: every sound gets at least one frame (a short one borrows time
+from its neighbours; only speech faster than the frame rate joins look-alike neighbours); every stop
+and nasal ends where the sound bursts open, every hissing letter follows its hiss; the report checks
+every mouth a word calls for.
+
+Output `mouths.json`: `mouthCues` (one picture at a time; the mouth at frame n is the cue with
+`start <= n/fps < end`), `mouthTrack` (a smooth open/width/round curve for rigs, every 1/rate s),
+`words`, `report`.
 
 ## Things to know
-
+- In songs, most problems were mouth SHAPES, less often timing (tested 2026-11-23); use `--sing`.
 - Don't pass the script to Whisper as a prompt: it then skips the words it was told about.
-  `lipsync.py` matches Whisper's words to the script in order instead.
-- Script handling (in `scripts/rules.py`): silent alef in ذَهَبوا and كوبًا, the ل of ال before sun
-  letters, hamzat wasl, the last short vowel dropped at a pause, tanween, shadda (the letter is given as
-two units, so it is held about twice as long),
-  diphthongs (aw round, ay spread).
-- Some speakers' ر sounds like غ, or barely sounds at all. The mouth for ر is placed from the script,
-  never from the sound, so this doesn't matter as long as the script is right.
-- The rules were measured from one speaker. They describe a real mouth; a cartoon needs its own
-  drawing for each mouth.
+- Script handling (`scripts/rules.py`): silent alef in ذَهَبوا and كوبًا, the ل of ال before sun
+  letters, hamzat wasl, the last short vowel dropped at a pause, tanween, shadda (held about twice as
+  long), diphthongs (aw round, ay spread), the Jazan article امْ, `…` as a pause.
+- The mouth for ر is placed from the script, never from the sound (some speakers' ر sounds like غ).
+- The rules were measured from one speaker; `--sing`'s brightness setting from one female singer.
+  Check other voices in the slow preview.
+- `python tests/test_rules.py` checks the rules without audio.

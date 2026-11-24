@@ -1,5 +1,14 @@
 # Tested with Python 3.14 on Windows 10 (2026-11). Other recent versions likely work.
+# Check what a job needs: python scripts/setup_check.py --job speech|song --voice ...
 numpy>=2.0,<3
-faster-whisper>=1.2,<2
+faster-whisper>=1.2,<2   # checking words, transcripts (model large-v3, about 3 GB, in HF_HOME)
+librosa>=0.11            # voice measuring: pyin voicing, loudness, --sing
+Pillow>=10               # mouth pictures: cut / check / fix
 # ffmpeg and ffprobe must be on PATH.
-# Whisper model: large-v3 (about 3 GB), downloaded once by faster-whisper; the scripts then run offline.
+#
+# MMS aligner (final timing), in a separate venv (default ~/envs/lipsync-mms, or set LIPSYNC_MMS_PYTHON):
+#   torch==2.15.* torchaudio==2.11.* (CPU wheels), soundfile; MMS_FA model (1.2 GB) in TORCH_HOME (default ~/.cache/torch)
+# Songs only, in the same venv:
+#   demucs (4.1 tested); model htdemucs (about 80 MB) in the Hugging Face cache
+# Voice, only the one the user picks (see references/voice_options.md):
+#   edge-tts (free, online) | TTS for XTTS v2 (~2 GB) | transformers for MMS-TTS | ElevenLabs connector (paid)

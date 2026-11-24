@@ -1,13 +1,19 @@
 """Arabic lip sync: audio + vowel-marked script -> timed mouth shapes.
 
 Usage:
-  python lipsync.py <audio or video> --out mouths.json [--script script.txt] [--words words.json] [--model large-v3]
+  python lipsync.py <audio or video> --out mouths.json [--script script.txt] [--words words.json] [--model large-v3] [--fps 30]
+                    [--aligner whisper|mms] [--dialect egy]
+
+  --aligner  whisper (default): Whisper word times, sounds fitted inside them.
+             mms: Meta's MMS forced aligner places every letter and vowel itself (needs --script and the
+             torch venv, see SKILL.md). Better for songs, held / long vowels and dialect; Whisper is not used.
+  --dialect  egy: in mms mode, ج is said g and ث ذ ظ as t d z.
 
   --script   the text that was said, with vowel marks (تشكيل). Without it, Whisper's transcript is
              saved to <out>.transcript.txt and the script stops: add the vowel marks, then re-run.
   --words    a file for Whisper's word times: read if it exists, written if not (saves re-running Whisper).
 Writes mouths.json: {"mouthCues": [{"start", "end", "mouth"}], "words": [...], "report": {...}}
-and prints a check of closures and vowels against the script.
+and prints a check of every mouth the script calls for (all letters weighed the same).
 """
 import argparse
 import difflib
@@ -25,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import align
 import rules
 
-PHRASE_END = ".،؟!:؛?,"
+PHRASE_END = ".،؟!:؛?,…"
 
 
 LOW_CONFIDENCE = 0.5   # Whisper word probability below this counts as unsure
@@ -54,6 +60,7 @@ def whisper_words(audio, model_name):
 
 def plain(word):
     """A word without vowel marks or punctuation, spelled the way Whisper tends to spell it."""
+    word = re.sub("^ا(?=مْ)", "", word)   # Jazan article امْ: Whisper drops the alef
     word = re.sub(f"[{''.join(rules.MARKS)}ـ{re.escape(PHRASE_END)}\"'«»()-]", "", word)
     for a, b in (("أ", "ا"), ("إ", "ا"), ("آ", "ا"), ("ة", "ه"), ("ى", "ي")):
         word = word.replace(a, b)
@@ -102,42 +109,100 @@ def read_script(path):
     return words
 
 
-def check(words, cues, audio):
-    """What the script expects against what the cues show.
+def expected_mouths(text, first, last):
+    """The mouths a word should show, in order: one per sound, with a sound's repeats (a doubled
+    letter, a consonant that shares its vowel's mouth) counted once."""
+    seq = []
+    for m in align.mouth_shapes(rules.units(text, first, last)):
+        if not seq or seq[-1] != m:
+            seq.append(m)
+    return seq
 
-    Closures are counted as events, one per ب/م (a doubled مّ is one long closure), and compared
-    word by word, using the word times as the aligner corrected them. Guessed and low-confidence
-    word times are counted, and the run is flagged for review when there are too many."""
-    timed = align.repair_times(words, align.features(audio)[0])
-    closed = [c for c in cues if c["mouth"] == "closed"]
-    expected, short, vowels = 0, [], {}
+
+def in_order(want, seen):
+    """Which of the wanted mouths are shown, in order: the best in-order match of want against seen
+    (longest common subsequence), so one missing sound never hides the ones after it."""
+    n, m = len(want), len(seen)
+    best = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            best[i][j] = best[i + 1][j + 1] + 1 if want[i] == seen[j] else max(best[i + 1][j], best[i][j + 1])
+    found, i, j = [], 0, 0
+    while i < n:
+        if j < m and want[i] == seen[j] and best[i][j] == best[i + 1][j + 1] + 1:
+            found.append(True)
+            i, j = i + 1, j + 1
+        elif j < m and best[i][j + 1] >= best[i + 1][j]:
+            j += 1
+        else:
+            found.append(False)
+            i += 1
+    return found
+
+
+def check(words, cues, audio, repair=True, low=LOW_CONFIDENCE):
+    """What the script expects against what the cues show, for every sound with the same weight.
+
+    For each word, every mouth its letters and vowels call for is looked for, in order, among the
+    cues inside the word's time (as the aligner corrected it). Guessed and low-confidence word
+    times are counted, and the run is flagged for review when there are too many."""
+    timed = align.repair_times(words, align.features(audio)[0]) if repair else words
+    expected, shown_n, missing_words, vowels, per_mouth = 0, 0, [], {}, {}
     for i, w in enumerate(timed):
         if w["start"] is None:
             continue
-        us = rules.units(w["text"], i == 0 or timed[i - 1]["phrase_end"], w["phrase_end"])
-        need = sum(1 for k, u in enumerate(us) if u[1] == "closed" and not (k and us[k - 1][1] == "closed" and us[k - 1][3] == u[3]))
-        expected += need
-        for kind, mouth, _, _ in us:
+        first = i == 0 or timed[i - 1]["phrase_end"]
+        for kind, mouth, _, _ in rules.units(w["text"], first, w["phrase_end"]):
             if kind == "vowel":
                 vowels[mouth] = vowels.get(mouth, 0) + 1
-        if need:
-            got = sum(1 for c in closed if c["end"] >= w["start"] - align.SLACK and c["start"] <= w["end"] + align.SLACK)
-            if got < need:
-                short.append({"word": w["text"], "at": round(w["start"], 2), "expected": need, "shown": got})
+        want = expected_mouths(w["text"], first, w["phrase_end"])
+        seen = [c["mouth"] for c in cues if c["end"] > w["start"] - align.SLACK and c["start"] < w["end"] + align.SLACK]
+        found = in_order(want, seen)
+        missing = []
+        for m, ok in zip(want, found):
+            per_mouth.setdefault(m, [0, 0])
+            per_mouth[m][1] += 1
+            per_mouth[m][0] += ok
+            if not ok:
+                missing.append(m)
+        expected += len(want)
+        shown_n += len(want) - len(missing)
+        if missing:
+            missing_words.append({"word": w["text"], "at": round(w["start"], 2), "missing": missing})
     shown = {}
     for c in cues:
         shown[c["mouth"]] = round(float(shown.get(c["mouth"], 0) + c["end"] - c["start"]), 2)
     guessed = [w["text"] for w in words if w.get("guessed")]
-    unsure = [w["text"] for w in words if not w.get("guessed") and w.get("p") is not None and w["p"] < LOW_CONFIDENCE]
+    unsure = [w["text"] for w in words if not w.get("guessed") and w.get("p") is not None and w["p"] < low]
     share = (len(guessed) + len(unsure)) / max(1, len(words))
     return {
         "words": len(words), "heard": sum(1 for w in words if not w.get("guessed")),
         "guessed": guessed, "low_confidence": unsure, "uncertain_share": round(share, 2),
         "review_needed": share > MAX_UNCERTAIN,
         "no_vowel_marks": [w["text"] for w in words if not rules.has_marks(w["text"]) and len(rules.letters(w["text"])) > 2],
-        "closures_expected": expected, "closures_shown": len(closed), "words_short_of_closures": short,
+        "sounds_expected": expected, "sounds_shown": shown_n, "words_missing_sounds": missing_words,
+        "shown_per_mouth": {m: f"{a}/{b}" for m, (a, b) in sorted(per_mouth.items())},
         "vowels_in_script": vowels, "seconds_per_mouth": shown,
     }
+
+
+def sh_wanted(mode, mouths):
+    if mode != "auto":
+        return mode == "on"
+    if mouths and any((Path(mouths) / f"sh{ext}").exists() for ext in (".png", ".jpg", ".jpeg")):
+        return True
+    return rules.USE_SH
+
+
+def audio_warnings(audio):
+    """Recordings that will time worse: a noisy or echoey floor (the quiet parts are not quiet)."""
+    loud = align.features(audio)[0]
+    out = []
+    floor = float(np.percentile(loud, 10))
+    if floor > 0.35:
+        out.append(f"noisy or echoey recording (quiet parts at {floor:.2f} of full loudness): "
+                   "timing may be rougher; a cleaner recording or vocal separation helps")
+    return out
 
 
 def main():
@@ -147,10 +212,47 @@ def main():
     ap.add_argument("--script")
     ap.add_argument("--words")
     ap.add_argument("--model", default="large-v3")
+    ap.add_argument("--aligner", choices=("whisper", "mms"), default="whisper")
+    ap.add_argument("--dialect", choices=("egy",), default=None)
+    ap.add_argument("--fps", type=float, default=30,
+                    help="frame rate of the video the mouths go into: every sound is shown for at least one frame")
+    ap.add_argument("--mouths", help="the character's mouth pictures folder (used by --sh auto)")
+    ap.add_argument("--sh", choices=("auto", "on", "off"), default="auto",
+                    help="show ش as the 'sh' mouth. auto: on when --mouths has an sh picture")
+    ap.add_argument("--sing", action="store_true", help="singing mode (needs --aligner mms): see sing.py")
+    ap.add_argument("--style", choices=("calm", "open"), default="calm",
+                    help="--sing only. calm: no wide, short fatha stays mid. open: wide on notes held 0.7 s+")
+    ap.add_argument("--bright", type=float, default=None, help="--sing only: brightness share that opens kasra/ي")
+    ap.add_argument("--hum-max", type=float, default=None, help="--sing only: longest closed mouth before it is flagged")
     a = ap.parse_args()
+    align.MIN_CUE = round(1 / a.fps + 0.0005, 3)
+    rules.USE_SH = sh_wanted(a.sh, a.mouths)
+    if rules.USE_SH:
+        print("ش shown as the 'sh' mouth")
+    if a.sing and a.aligner != "mms":
+        sys.exit("--sing needs --aligner mms")
 
     with tempfile.TemporaryDirectory() as tmp:
         audio = to_wav(a.audio, Path(tmp) / "a.wav")
+    if a.aligner == "mms":
+        if not a.script:
+            sys.exit("--aligner mms needs --script (run once without it, with Whisper, to get a transcript)")
+        import mms
+        script = read_script(a.script)
+        if a.sing:
+            import sing
+            words, cues, track, sung = sing.cues_and_track(audio, script, a.dialect, a.style, a.bright, a.hum_max)
+        else:
+            words, cues, track = mms.cues_and_track(audio, script, a.dialect)
+            sung = None
+        report = check(words, cues, audio, repair=False, low=mms.LOW_SCORE)
+        report["audio_warnings"] = audio_warnings(audio)
+        if sung:
+            report["singing"] = sung
+        for w in words:
+            w["timing"] = "guessed" if w.get("guessed") else "mms"
+        write_and_print(a.out, cues, track, words, report, "MMS")
+        return
     if a.words and Path(a.words).exists():
         heard = json.loads(Path(a.words).read_text(encoding="utf-8"))
     else:
@@ -167,19 +269,38 @@ def main():
 
     script = read_script(a.script)
     words = [dict(m, phrase_end=s["phrase_end"]) for m, s in zip(match([s["text"] for s in script], heard), script)]
-    cues = align.cues(audio, words)
+    cues, track = align.cues_and_track(audio, words)
     report = check(words, cues, audio)
     for w in words:   # where each word's time came from
         w["timing"] = "guessed" if w.get("guessed") else "whisper"
-    Path(a.out).write_text(json.dumps({"mouthCues": cues, "words": words, "report": report}, ensure_ascii=False, indent=1), encoding="utf-8")
+    write_and_print(a.out, cues, track, words, report, "Whisper")
 
-    print(f"{len(cues)} mouth cues -> {a.out}")
-    print(f"words: {report['heard']} of {report['words']} heard by Whisper" + (f"; guessed: {' '.join(report['guessed'])}" if report["guessed"] else ""))
+
+CHECK_FIRST = 0.5   # aligner scores below this usually mean a wrong word or wrong marks in the script
+
+
+def write_and_print(out, cues, track, words, report, by):
+    first = sorted((w for w in words if w.get("p") is not None and w["p"] < CHECK_FIRST), key=lambda w: w["p"])
+    report["check_first"] = [{"word": w["text"], "at": w["start"], "p": w["p"]} for w in first]
+    Path(out).write_text(json.dumps({"mouthCues": cues, "mouthTrack": track, "words": words, "report": report}, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"{len(cues)} mouth cues -> {out}")
+    if first:
+        print("CHECK THESE WORDS FIRST (low aligner score: often a wrong word or vowel mark):",
+              ", ".join(f"{w['text']} at {w['start']:.2f}s (p {w['p']})" for w in first))
+    for warn in report.get("audio_warnings", []):
+        print("WARNING:", warn)
+    if report.get("singing"):
+        s = report["singing"]
+        print("singing:", {k: v for k, v in s.items() if k not in ("long_closed",)})
+        for c in s.get("long_closed", []):
+            print(f"  long closed mouth {c['start']:.2f}-{c['end']:.2f}s ({c['end'] - c['start']:.2f}s): check it in the slow preview")
+    print(f"words: {report['heard']} of {report['words']} timed by {by}" + (f"; guessed: {' '.join(report['guessed'])}" if report["guessed"] else ""))
     if report["low_confidence"]:
         print("heard but unsure (check these words):", " ".join(report["low_confidence"]))
-    print(f"closures: {report['closures_shown']} shown for {report['closures_expected']} ب/م in the script")
-    for s_ in report["words_short_of_closures"]:
-        print(f"  fewer closures than expected: {s_['word']} at {s_['at']}s ({s_['shown']} of {s_['expected']})")
+    print(f"sounds: {report['sounds_shown']} of {report['sounds_expected']} mouths the script calls for are shown")
+    print("  shown per mouth:", report["shown_per_mouth"])
+    for s_ in report["words_missing_sounds"]:
+        print(f"  missing in {s_['word']} at {s_['at']}s: {' '.join(s_['missing'])}")
     print("vowels in the script:", report["vowels_in_script"])
     print("seconds per mouth:", report["seconds_per_mouth"])
     if report["no_vowel_marks"]:

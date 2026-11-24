@@ -1,6 +1,9 @@
 """A quick preview video: the character's mouth pictures shown in time with the voice.
 
 Usage: python render_preview.py <mouths.json> <audio or video> <pictures folder> <out.mp4> [--fps 30] [--slow] [--strict]
+                                [--size 1080x1920] [--bg white]
+--size puts the character, scaled to fit, centred on a canvas of that size (final videos: 1080x1920
+for Reels/Shorts, 1080x1080 square, 1920x1080 wide) with --bg as the background colour.
 
 The pictures folder holds one image per mouth, all the same size, named by mouth:
 rest, closed, f, small, mid, wide, round, aw, sh (.png or .jpg). A missing mouth uses the nearest
@@ -59,6 +62,14 @@ def main():
     cues_path, audio, folder, out = sys.argv[1:5]
     fps = int(sys.argv[sys.argv.index("--fps") + 1]) if "--fps" in sys.argv else 30
     strict = "--strict" in sys.argv
+    size = sys.argv[sys.argv.index("--size") + 1] if "--size" in sys.argv else None      # e.g. 1080x1920
+    bg = sys.argv[sys.argv.index("--bg") + 1] if "--bg" in sys.argv else "white"          # a colour name or 0xRRGGBB
+    if size:
+        w, h = size.lower().split("x")
+        vf = (f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
+              f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color={bg},setsar=1")
+    else:
+        vf = "pad=ceil(iw/2)*2:ceil(ih/2)*2"
     folder = Path(folder)
     cues = json.loads(Path(cues_path).read_text(encoding="utf-8")).get("mouthCues", [])
     check_inputs(cues, folder)
@@ -96,7 +107,7 @@ def main():
         lst.write_text("\n".join(lines), encoding="utf-8")
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-i", str(audio),
                         "-map", "0:v", "-map", "1:a", "-r", str(fps), "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                        "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:a", "aac", "-shortest", str(out)], check=True)
+                        "-vf", vf, "-c:a", "aac", "-shortest", str(out)], check=True)
         if "--slow" in sys.argv:
             slow = Path(out).with_name(Path(out).stem + "_slow.mp4")
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(out), "-filter:v", "setpts=2*PTS", "-filter:a", "atempo=0.5",

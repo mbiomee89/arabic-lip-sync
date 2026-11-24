@@ -5,7 +5,7 @@ kind is "consonant" or "vowel"; mouth is a mouth name or None (the aligner then 
 
 Mouth names:
   rest    silence
-  closed  ب م: lips pressed together
+  closed  ب م, and the Jazan article امْ: lips pressed together
   f       ف: lower lip pulled in
   small   kasra, long ي and most consonants: nearly shut, lips spread
   mid     fatha: lips apart, top teeth showing
@@ -35,7 +35,7 @@ WEIGHT = {"consonant": 1.0, "short": 1.0, "long": 2.0}   # measured: long syllab
 def letters(word):
     """Base letters with their marks: [[letter, set(marks)], ...], punctuation removed."""
     out = []
-    for ch in re.sub(r"[ـ،؛؟.,:!?\"'«»()\-]", "", word):
+    for ch in re.sub(r"[ـ،؛؟.,:!?\"'«»()\-…]", "", word):
         if ch in MARKS and out:
             out[-1][1].add(ch)
         elif ch not in MARKS:
@@ -60,6 +60,10 @@ def vowel_of(marks):
 def units(word, first_in_phrase, last_in_phrase):
     ls = letters(word)
     silent = set()
+    # Jazan article امْ: the alef is not said, the م closes the lips. Only a bare alef: one with
+    # a vowel mark is said (اِمْبارِح, اِمْشي).
+    if len(ls) > 2 and ls[0][0] == "ا" and not ls[0][1] and ls[1][0] == "م" and SUKUN in ls[1][1]:
+        silent.add(0)
     # Article ال, alone or after a one-letter prefix (وَال، بِال، فَال، كَال).
     start = 1 if len(ls) > 3 and ls[0][1] and ls[1][0] == "ا" and ls[2][0] == "ل" else 0
     if len(ls) > start + 2 and ls[start][0] == "ا" and ls[start + 1][0] == "ل" and not ls[start][1]:

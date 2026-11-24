@@ -20,9 +20,27 @@ The goal is the mouth, not grammar. Mark what the speaker actually says.
 ## Dialect
 - **Write words as they are said,** not as in fusha.
   - Egyptian: اِلْمُعادَلات, بِيِتْكَلِّم, إِزّاي.
+  - Jazan: امْيوم, امْسوق.
+- **The Jazan article امْ** closes the lips. Write it with sukun on م, as in امْيوم, and keep it joined to the word.
 - **Egyptian or Levantine "il-":** writing اِلْ with a kasra is fine.
 - **English words** (skill, comment): write the vowel the mouth makes, not the spelling. English short i and e are more open than Arabic kasra, so write a fatha: سْكَل, كومَنْت. A kasra or ي would show a nearly shut mouth.
 - **Egyptian and Levantine ق is said as a glottal stop ء:** write it as said (بُقّي → بُؤّي, دقايق → دَأايِء, دلوقتي → دِلْوَأْتي). A written ق is placed as a hard stop with a nearly shut mouth; ء takes the mouth of its vowel, which is what the lips really do.
+
+## Songs (tested on an Egyptian song, 2026-11-23)
+- **Write what is sung, not the written lyric.** ق sung as ء is ء (أَلْبي, not قلبي), and a
+  contraction sung as one word is one word: مَبْيِعْرَفْشْ, never مَا بِيِعْرَفْشْ… (a separate مَا with a
+  long ا shows a wide mouth that the singer never makes).
+- **Short "ma" stays short:** مَ, not مَا, when the singer doesn't hold it.
+- **Kasra and ي in songs:** mark them as usual. Singers open "e"/"ee" much more than speakers;
+  `--sing` measures that from the voice and opens the mouth, so don't change the marks for it.
+- **Check the low-score words first.** Wrong lyric words showed up exactly as aligner scores
+  under 0.5 (the report's "check these words first"). Get the real lyrics from the user; Whisper
+  on a song is unreliable even on separated vocals.
+
+## Two spellings when a TTS voice reads the text
+The voice may need a different spelling than the timing (see voice_options.md): keep the
+**timing spelling** (as said, fully marked) in the script for lipsync.py, and send the TTS its own
+**voice spelling** (e.g. split a hard word: ما بِيِعْرَفْش).
 
 ## Handled automatically
 You don't need to do anything for these:

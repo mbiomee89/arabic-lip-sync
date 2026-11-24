@@ -4,7 +4,7 @@
 One speaker read a 5.5-minute script on video:
 - **A syllable table:** 28 letters, each with fatha, kasra, damma, long ا, long ي, long و and sukun, so 196 syllables.
 - **8 fusha sentences.**
-- **4 dialect sentences.**
+- **4 sentences in his dialect** (Jazan, Saudi Arabia).
 
 The details:
 - The video was 30 fps, 9,843 frames.
